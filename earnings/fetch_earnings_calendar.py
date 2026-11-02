@@ -1,17 +1,21 @@
 """
 companies.csv에 등록된 기업들의 실적발표일을 가져와 earnings_calendar.csv로 저장한다.
 
-날짜 자체는 사실관계(저작권 없음)라 Nasdaq의 공개 종목정보 API(로그인 불필요)를
-그대로 쓴다. 이 API가 알려주는 건 "다음 실적발표일" 하나뿐이라, 그 날짜가 지나가는
-순간을 감지해서 "지난 실적발표일(last_report_date)"로 옮겨 기록한다 - 대시보드가
-summary/<ticker>_<last_report_date>.txt 를 찾아 보여주는 데 쓰는 키가 된다.
+날짜 자체는 사실관계(저작권 없음)라 Nasdaq의 공개 API(로그인 불필요)를 그대로 쓴다.
+두 개의 다른 API를 합쳐서 쓰는데, 성격이 달라서다:
+  - "다음 발표일"(next_earnings_date)은 /api/quote/{ticker}/info 의 notifications에
+    Nasdaq이 날짜를 확정해 공지했을 때만 나타난다 - 회사가 아직 정식으로 날짜를 발표하지
+    않았으면 이 API에도 없다. 이 경우 빈 칸("미정")이 맞는 상태다.
+  - "이전 발표일"(last_report_date)은 /api/company/{ticker}/earnings-surprise 의
+    earningsSurpriseTable 첫 행(dateReported)에서 바로 가져온다. 이미 지나간 실적이라
+    공지 여부와 상관없이 항상 확정된 값으로 나온다 - next_earnings_date가 비어 있던
+    티커도(아직 다음 날짜가 안 잡혀 있어도) last_report_date는 바로 채워진다.
 
 이 스크립트는 날짜만 다룬다. 실적 콜 "전문"은 저작권 있는 콘텐츠라 이 배치에서
 자동 수집·게시하지 않는다 - 발표가 실제로 끝난 뒤 사람이 직접(또는 예약된
 Claude Code 세션이) 전문을 참고해 원본 요약을 작성해 summary/ 폴더에 올린다.
 """
 import csv
-import json
 import os
 import sys
 from datetime import datetime, date
@@ -20,9 +24,9 @@ EARNINGS_DIR = os.path.dirname(os.path.abspath(__file__))
 COMPANIES_PATH = os.path.join(EARNINGS_DIR, "companies.csv")
 CALENDAR_PATH = os.path.join(EARNINGS_DIR, "earnings_calendar.csv")
 SUMMARY_DIR = os.path.join(EARNINGS_DIR, "summary")
-STATE_PATH = os.path.join(EARNINGS_DIR, ".last_known_dates.json")
 
-NASDAQ_URL = "https://api.nasdaq.com/api/quote/{ticker}/info?assetclass=stocks"
+NASDAQ_INFO_URL = "https://api.nasdaq.com/api/quote/{ticker}/info?assetclass=stocks"
+NASDAQ_SURPRISE_URL = "https://api.nasdaq.com/api/company/{ticker}/earnings-surprise"
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
@@ -34,11 +38,11 @@ def load_companies() -> list:
         return [r for r in csv.DictReader(f) if r.get("ticker")]
 
 
-def fetch_one(ticker: str) -> str:
-    """해당 티커의 "다음 실적발표일"을 YYYY-MM-DD로 반환한다. 못 찾으면 빈 문자열."""
+def fetch_next_date(ticker: str) -> str:
+    """"다음 실적발표일"을 YYYY-MM-DD로 반환한다. Nasdaq이 아직 공지하지 않았으면 빈 문자열."""
     import requests
 
-    resp = requests.get(NASDAQ_URL.format(ticker=ticker), headers=HEADERS, timeout=20)
+    resp = requests.get(NASDAQ_INFO_URL.format(ticker=ticker), headers=HEADERS, timeout=20)
     resp.raise_for_status()
     data = resp.json().get("data") or {}
     for note in data.get("notifications") or []:
@@ -54,16 +58,21 @@ def fetch_one(ticker: str) -> str:
     return ""
 
 
-def load_state() -> dict:
-    if not os.path.exists(STATE_PATH):
-        return {}
-    with open(STATE_PATH, encoding="utf-8") as f:
-        return json.load(f)
+def fetch_last_report_date(ticker: str) -> str:
+    """가장 최근(이미 끝난) 실적발표일을 YYYY-MM-DD로 반환한다. earnings-surprise 표의
+    첫 행이 가장 최신 분기다. 데이터가 없으면 빈 문자열."""
+    import requests
 
-
-def save_state(state: dict) -> None:
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    resp = requests.get(NASDAQ_SURPRISE_URL.format(ticker=ticker), headers=HEADERS, timeout=20)
+    resp.raise_for_status()
+    rows = (resp.json().get("data") or {}).get("earningsSurpriseTable", {}).get("rows") or []
+    if not rows:
+        return ""
+    raw = rows[0].get("dateReported", "")
+    try:
+        return datetime.strptime(raw, "%m/%d/%Y").date().isoformat()
+    except ValueError:
+        return ""
 
 
 def summary_exists(ticker: str, report_date: str) -> bool:
@@ -74,7 +83,6 @@ def summary_exists(ticker: str, report_date: str) -> bool:
 
 def main() -> bool:
     companies = load_companies()
-    state = load_state()
     today = date.today().isoformat()
 
     rows = []
@@ -82,22 +90,19 @@ def main() -> bool:
     for row in companies:
         ticker = row["ticker"].strip()
         company = row["company"].strip()
-        prev = state.get(ticker, {})
-        prev_next = prev.get("next_date", "")
-        last_report_date = prev.get("last_report_date", "")
 
         try:
-            next_date = fetch_one(ticker)
+            next_date = fetch_next_date(ticker)
         except Exception as e:
-            print(f"[{ticker}] 조회 실패: {e}")
-            next_date = prev_next
+            print(f"[{ticker}] 다음 발표일 조회 실패: {e}")
+            next_date = ""
 
-        # 직전까지 "다음 실적일"로 잡아뒀던 날짜가 이제 과거가 됐다면,
-        # 그게 곧 가장 최근 실적발표일이다.
-        if prev_next and prev_next <= today and prev_next != last_report_date:
-            last_report_date = prev_next
+        try:
+            last_report_date = fetch_last_report_date(ticker)
+        except Exception as e:
+            print(f"[{ticker}] 이전 발표일 조회 실패: {e}")
+            last_report_date = ""
 
-        state[ticker] = {"next_date": next_date, "last_report_date": last_report_date}
         rows.append({
             "ticker": ticker,
             "company": company,
@@ -113,8 +118,6 @@ def main() -> bool:
         writer = csv.DictWriter(f, fieldnames=["ticker", "company", "next_earnings_date", "last_report_date", "updated_at"])
         writer.writeheader()
         writer.writerows(rows)
-
-    save_state(state)
 
     print(f"{len(rows)}개 기업 실적일 갱신 -> {CALENDAR_PATH}")
     if needs_summary:

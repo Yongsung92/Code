@@ -7,4 +7,3 @@ serve_dashboard.log
 *.pem
 __pycache__/
 *.pyc
-earnings/.last_known_dates.json
