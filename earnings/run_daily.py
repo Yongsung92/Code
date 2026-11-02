@@ -1,8 +1,12 @@
 """
-매일 fetch_earnings_calendar.py 로 추적 중인 기업들의 다음 실적발표일을 갱신하고,
-끝나면 sync_to_server.py 로 결과를 Lightsail 공개 대시보드(실적 탭)에 올리는
-배치 진입점. 실적 콜 "전문" 수집·요약은 이 배치가 아니라 별도(사람 또는 예약된
-Claude Code 세션)가 담당한다 - fetch_earnings_calendar.py 참고.
+매일 git pull로 클라우드 요약 에이전트가 올린 새 요약을 받아오고,
+fetch_earnings_calendar.py 로 추적 중인 기업들의 다음 실적발표일을 갱신한 뒤,
+sync_to_server.py 로 결과를 Lightsail 공개 대시보드(실적 탭)에 올리는 배치 진입점.
+
+실적 콜 "전문" 수집·요약 자체는 이 PC가 아니라 GitHub(Yongsung92/Code)에 연결된
+클라우드 Claude Code 루틴이 담당한다 - SSH 키는 이 로컬 PC에만 있고 클라우드에는
+절대 올리지 않으므로, 클라우드 쪽은 summary/*.txt 를 git commit/push만 하고
+이 배치가 그걸 pull 받아서 Lightsail로 올리는 역할을 나눠 맡는다.
 
 실행 로그는 earnings/run_daily.log 에 누적된다.
 """
@@ -12,9 +16,33 @@ import subprocess
 import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CODE_DIR = os.path.dirname(BASE_DIR)
 LOG_PATH = os.path.join(BASE_DIR, "run_daily.log")
 LAST_SUCCESS_PATH = os.path.join(BASE_DIR, ".last_success_date.txt")
 SCRIPTS = ["fetch_earnings_calendar.py"]
+# pythonw.exe(콘솔 없음)가 git(콘솔 앱)을 띄우면 윈도우가 새 콘솔 창을 만들어 버린다 -
+# 배치가 조용히 돌도록 창을 띄우지 않는다.
+CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def git_pull() -> None:
+    """클라우드 루틴이 push한 새 요약 파일을 받아온다. 실패해도 배치 전체를 막지는 않는다
+    (네트워크가 없거나 GitHub 연동 전이어도 날짜 갱신·업로드는 계속 돌아가야 한다)."""
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=CODE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        if result.returncode == 0:
+            log(f"git pull 완료: {result.stdout.strip() or '변경 없음'}")
+        else:
+            log(f"git pull 실패(무시하고 계속함): {result.stderr.strip()}")
+    except Exception as e:
+        log(f"git pull 중 오류(무시하고 계속함): {e}")
 
 
 def log(msg: str) -> None:
@@ -70,6 +98,7 @@ def main():
         return
 
     log("일일 배치 시작")
+    git_pull()
     ok = True
     for script in SCRIPTS:
         if not run_script(script):
