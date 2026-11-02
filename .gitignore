@@ -1,2 +1,9 @@
 investor_trend.csv
 deal_rank.csv
+etf/.krx_cookies.json
+etf/run_daily.log
+serve_dashboard.log
+*.pem
+__pycache__/
+*.pyc
+earnings/.last_known_dates.json
