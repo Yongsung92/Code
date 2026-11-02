@@ -3,6 +3,7 @@ deal_rank.csv
 etf/.krx_cookies.json
 etf/run_daily.log
 earnings/run_daily.log
+earnings/transcripts/
 serve_dashboard.log
 *.pem
 __pycache__/
