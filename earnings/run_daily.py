@@ -1,13 +1,13 @@
 """
 매일 git pull로 받아오고, fetch_earnings_calendar.py 로 추적 중인 기업들의 다음
-실적발표일을 갱신한 뒤, run_summary_agent.py 로 아직 전문/요약이 없는 기업의 실적
-콜을 처리하고(전문은 transcripts/에 로컬로만 저장, 요약은 summary/에 저장 후 커밋),
-마지막으로 sync_to_server.py 로 결과를 Lightsail 공개 대시보드(실적 탭)에 올리는
-배치 진입점.
+실적발표일을 갱신한 뒤(요약이 밀린 기업이 있으면 그 출력에 나열됨), 끝으로
+sync_to_server.py 로 결과를 Lightsail 공개 대시보드(실적 탭)에 올리는 배치 진입점.
 
-실적 콜 "전문" 수집·요약은 전부 이 로컬 PC에서만 일어난다 - 저작권 있는 원문을
-외부(GitHub 등)로 내보내지 않기 위해서다. run_summary_agent.py는 Claude API를
-직접 호출하며 ANTHROPIC_API_KEY 환경변수가 필요하다.
+실적 콜 전문 수집·요약 자체는 이 배치가 자동으로 하지 않는다 - 무인으로 실행하려면
+Claude Code를 권한 확인 없이 돌려야 하는데, 그건 별도의 명시적 승인이 필요한 영역이라
+(대화에서 결정됨) 사람이 "오늘 밀린 실적 요약 처리해줘"라고 직접 요청하면 그때
+세션에서 처리하고 earnings/summary/ 에 저장한다. 그렇게 저장해두면 다음날 이 배치가
+git push와 Lightsail 업로드까지 자동으로 이어서 해준다.
 
 실행 로그는 earnings/run_daily.log 에 누적된다.
 """
@@ -138,8 +138,7 @@ def main():
         ok = False
     git_push_paths(["earnings/earnings_calendar.csv"], "Update earnings_calendar.csv")
 
-    if not run_script("run_summary_agent.py"):
-        ok = False
+    # 전날 사이에 사람이 직접 요청해서 새로 쓴 요약이 있으면 여기서 같이 push된다.
     git_push_paths(["earnings/summary/"], "Add new earnings summaries")
 
     if not run_script("sync_to_server.py"):
