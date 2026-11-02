@@ -1,7 +1,8 @@
 """
 매일 git pull로 클라우드 요약 에이전트가 올린 새 요약을 받아오고,
-fetch_earnings_calendar.py 로 추적 중인 기업들의 다음 실적발표일을 갱신한 뒤,
-sync_to_server.py 로 결과를 Lightsail 공개 대시보드(실적 탭)에 올리는 배치 진입점.
+fetch_earnings_calendar.py 로 추적 중인 기업들의 다음 실적발표일을 갱신해 GitHub에
+다시 push한 뒤(클라우드 루틴이 최신 "요약 필요" 목록을 보도록), sync_to_server.py 로
+결과를 Lightsail 공개 대시보드(실적 탭)에 올리는 배치 진입점.
 
 실적 콜 "전문" 수집·요약 자체는 이 PC가 아니라 GitHub(Yongsung92/Code)에 연결된
 클라우드 Claude Code 루틴이 담당한다 - SSH 키는 이 로컬 PC에만 있고 클라우드에는
@@ -43,6 +44,41 @@ def git_pull() -> None:
             log(f"git pull 실패(무시하고 계속함): {result.stderr.strip()}")
     except Exception as e:
         log(f"git pull 중 오류(무시하고 계속함): {e}")
+
+
+def git_push_calendar() -> None:
+    """갱신된 earnings_calendar.csv를 GitHub에 올려서, 클라우드 요약 루틴이 최신
+    '요약 필요' 목록을 보게 한다. 바뀐 게 없으면 조용히 넘어간다."""
+    try:
+        subprocess.run(
+            ["git", "add", "earnings/earnings_calendar.csv"],
+            cwd=CODE_DIR, capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW,
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--cached", "--quiet", "--", "earnings/earnings_calendar.csv"],
+            cwd=CODE_DIR, timeout=30, creationflags=CREATE_NO_WINDOW,
+        )
+        if diff.returncode == 0:
+            log("earnings_calendar.csv 변경 없음 - push 건너뜀")
+            return
+        commit = subprocess.run(
+            ["git", "commit", "-m", "Update earnings_calendar.csv",
+             "-m", "Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"],
+            cwd=CODE_DIR, capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW,
+        )
+        if commit.returncode != 0:
+            log(f"git commit 실패(무시하고 계속함): {commit.stderr.strip()}")
+            return
+        push = subprocess.run(
+            ["git", "push", "origin", "main"],
+            cwd=CODE_DIR, capture_output=True, text=True, timeout=60, creationflags=CREATE_NO_WINDOW,
+        )
+        if push.returncode == 0:
+            log("earnings_calendar.csv GitHub push 완료")
+        else:
+            log(f"git push 실패(무시하고 계속함): {push.stderr.strip()}")
+    except Exception as e:
+        log(f"git push 중 오류(무시하고 계속함): {e}")
 
 
 def log(msg: str) -> None:
@@ -103,6 +139,7 @@ def main():
     for script in SCRIPTS:
         if not run_script(script):
             ok = False
+    git_push_calendar()
 
     if not run_script("sync_to_server.py"):
         ok = False
